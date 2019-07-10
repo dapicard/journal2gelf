@@ -74,17 +74,19 @@ class JournalToGelf:
         23:  "local7"
     }
 
-    def __init__(self, fp, host='localhost', port=12201, multiline_format=False):
+    def __init__(self, fp, host='localhost', port=12201, multiline_format=False, headers={}):
         self.buf = deque()
         self.fp = fp
         self.multiline_format = multiline_format
+        self.headers = headers
         self.gelf = graypy.GELFHandler(host, port)
 
     def _send_gelf(self):
         try:
             msg = {'version': '1.0'}
-            record = json.loads(''.join(self.buf))
-            for key, value in record.iteritems():
+            msg.update(self.headers)
+            record = json.loads(b''.join(self.buf))
+            for key, value in record.items():
                 # journalctl's JSON exporter will convert unprintable (incl. newlines)
                 # strings into an array of integers. We convert these integers into
                 # their ascii representation and concatenate them together
@@ -111,9 +113,9 @@ class JournalToGelf:
                 else:
                     # prefix additional fields with '_' for graylog.
                     msg['_' + key] = value
-            self.gelf.send(zlib.compress(json.dumps(msg)))
+            self.gelf.send(zlib.compress(json.dumps(msg).encode()))
         except ValueError:
-            print "Warning: invalid JSON. Skipping this record."
+            print("Warning: invalid JSON. Skipping this record.")
         finally:
             self.buf.clear()
 
@@ -158,14 +160,28 @@ if __name__ == '__main__':
                             help='Start journalctl and tail it forever (default: %default)')
     opts_parser.add_option('-m', '--multiline-format', dest='multiline_format', default=False, action='store_true',
                             help='Expect multi-line JSON format (systemd version < 190) (default: %default))')
+    opts_parser.add_option('-H', '--header', dest='headers', action='append', default=[],
+                            help='Adds static field to GELF record, in form of field_name:field_value')
+    opts_parser.add_option('-u', '--unit', dest='units', action='append', default=[],
+                            help='Adds a unit to monitor (in conjunction with --tail). (default: all')
     (opts, args) = opts_parser.parse_args()
 
     read_from_fd = None
     if opts.tail:
-        read_from_fd = subprocess.Popen(['journalctl', '-o', 'json', '-f'],
-                                        stdout=subprocess.PIPE).stdout
+        command = ['journalctl']
+        for unit in opts.units:
+            command.append('-u')
+            command.append(unit)
+        command.append('-o')
+        command.append('json')
+        command.append('-f')
+        read_from_fd = subprocess.Popen(command, stdout=subprocess.PIPE).stdout
     else:
         read_from_fd = sys.stdin
 
-    parser = JournalToGelf(fp=read_from_fd, host=opts.host, port=opts.port, multiline_format=opts.multiline_format)
+    headers = {}
+    for header in opts.headers:
+        headers.update({header.split(':')[0] : header.split(':')[1]})
+
+    parser = JournalToGelf(fp=read_from_fd, host=opts.host, port=opts.port, multiline_format=opts.multiline_format, headers=headers)
     parser.run()
