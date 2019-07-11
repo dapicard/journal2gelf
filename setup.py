@@ -10,5 +10,5 @@ setup(
     license='LICENSE',
     description="Send logs from systemd's journald to a GELF server like Graylog2",
     long_description=open('README.md').read(),
-    install_requires=["graypy"],
+    install_requires=["logging-gelf"],
 )

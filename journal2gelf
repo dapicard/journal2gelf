@@ -43,7 +43,7 @@
 import sys
 import json
 import zlib
-import graypy
+from logging_gelf.handlers import GELFTCPSocketHandler, GELFUDPSocketHandler
 
 from collections import deque
 
@@ -74,16 +74,22 @@ class JournalToGelf:
         23:  "local7"
     }
 
-    def __init__(self, fp, host='localhost', port=12201, multiline_format=False, headers={}):
+    def __init__(self, fp, host='localhost', port=12201, multiline_format=False, headers={}, transport='udp'):
         self.buf = deque()
         self.fp = fp
         self.multiline_format = multiline_format
         self.headers = headers
-        self.gelf = graypy.GELFHandler(host, port)
+        self.transport = transport
+        if transport == 'udp':
+            self.gelf = GELFUDPSocketHandler(host, port)
+        elif transport == 'tcp':
+            self.gelf = GELFTCPSocketHandler(host, port)
+        else:
+            self.gelf = GELFTCPSocketHandler(host, port, use_tls=True)
 
     def _send_gelf(self):
         try:
-            msg = {'version': '1.0'}
+            msg = {'version': '1.1'}
             msg.update(self.headers)
             record = json.loads(b''.join(self.buf))
             for key, value in record.items():
@@ -91,6 +97,7 @@ class JournalToGelf:
                 # strings into an array of integers. We convert these integers into
                 # their ascii representation and concatenate them together
                 # to reconstitute the string.
+
                 if type(value) is list:
                     value = ''.join([chr(x) for x in value])
 
@@ -113,7 +120,10 @@ class JournalToGelf:
                 else:
                     # prefix additional fields with '_' for graylog.
                     msg['_' + key] = value
-            self.gelf.send(zlib.compress(json.dumps(msg).encode()))
+            if self.transport == 'udp':
+                self.gelf.send(zlib.compress((json.dumps(msg)).encode()))
+            else:
+                self.gelf.send((json.dumps(msg)+ "\x00").encode())
         except ValueError:
             print("Warning: invalid JSON. Skipping this record.")
         finally:
@@ -164,6 +174,8 @@ if __name__ == '__main__':
                             help='Adds static field to GELF record, in form of field_name:field_value')
     opts_parser.add_option('-u', '--unit', dest='units', action='append', default=[],
                             help='Adds a unit to monitor (in conjunction with --tail). (default: all')
+    opts_parser.add_option('-T', '--transport', dest='transport', default='udp',
+                            help='Select the transport layer : one of udp, tcp or tls. (default: %default')
     (opts, args) = opts_parser.parse_args()
 
     read_from_fd = None
@@ -177,11 +189,11 @@ if __name__ == '__main__':
         command.append('-f')
         read_from_fd = subprocess.Popen(command, stdout=subprocess.PIPE).stdout
     else:
-        read_from_fd = sys.stdin
+        read_from_fd = sys.stdin.buffer
 
     headers = {}
     for header in opts.headers:
         headers.update({header.split(':')[0] : header.split(':')[1]})
 
-    parser = JournalToGelf(fp=read_from_fd, host=opts.host, port=opts.port, multiline_format=opts.multiline_format, headers=headers)
+    parser = JournalToGelf(fp=read_from_fd, host=opts.host, port=opts.port, multiline_format=opts.multiline_format, headers=headers, transport=opts.transport)
     parser.run()
